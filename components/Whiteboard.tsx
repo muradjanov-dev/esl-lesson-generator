@@ -16,14 +16,8 @@ interface Stroke {
 }
 
 const COLORS = [
-  "#f97316",
-  "#ef4444",
-  "#3b82f6",
-  "#22c55e",
-  "#a855f7",
-  "#ec4899",
-  "#eab308",
-  "#000000",
+  "#f97316", "#ef4444", "#3b82f6", "#22c55e",
+  "#a855f7", "#ec4899", "#eab308", "#000000",
 ];
 
 interface WhiteboardProps {
@@ -34,7 +28,7 @@ export default function Whiteboard({ drawMode }: WhiteboardProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const strokesRef = useRef<Stroke[]>([]);
   const currentStrokeRef = useRef<Stroke | null>(null);
-  const isDrawing = useRef(false);
+  const isDrawingRef = useRef(false);
   const drawModeRef = useRef(drawMode);
   const toolRef = useRef<"pen" | "eraser">("pen");
   const colorRef = useRef("#f97316");
@@ -49,7 +43,6 @@ export default function Whiteboard({ drawMode }: WhiteboardProps) {
   useEffect(() => { toolRef.current = tool; }, [tool]);
   useEffect(() => { colorRef.current = color; }, [color]);
 
-  // ── Resize canvas to full document height ──
   const resizeCanvas = useCallback(() => {
     const h = Math.max(
       document.body.scrollHeight,
@@ -67,7 +60,6 @@ export default function Whiteboard({ drawMode }: WhiteboardProps) {
     return () => { ro.disconnect(); window.removeEventListener("resize", resizeCanvas); };
   }, [resizeCanvas]);
 
-  // ── Redraw all strokes ──
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -100,136 +92,90 @@ export default function Whiteboard({ drawMode }: WhiteboardProps) {
 
   useEffect(() => { redraw(); }, [redraw, canvasSize]);
 
-  const getPoint = (clientX: number, clientY: number): Point => {
-    const rect = canvasRef.current!.getBoundingClientRect();
-    return {
-      x: clientX - rect.left,
-      y: clientY - rect.top + window.scrollY,
-    };
-  };
+  const clientToCanvas = (clientX: number, clientY: number): Point => ({
+    x: clientX,
+    y: clientY + window.scrollY,
+  });
 
-  // ── Attach native events directly on canvas ──
-  // touch-action:none (via style) tells the browser not to scroll on this element.
-  // We then manually decide: if drawMode is off, we forward the scroll ourselves.
+  const startStroke = useCallback((x: number, y: number) => {
+    isDrawingRef.current = true;
+    currentStrokeRef.current = {
+      points: [clientToCanvas(x, y)],
+      color: toolRef.current === "eraser" ? "#000" : colorRef.current,
+      width: toolRef.current === "eraser" ? 28 : 4,
+      isEraser: toolRef.current === "eraser",
+    };
+  }, []);
+
+  const continueStroke = useCallback((x: number, y: number) => {
+    if (!isDrawingRef.current || !currentStrokeRef.current) return;
+    currentStrokeRef.current.points.push(clientToCanvas(x, y));
+    redraw();
+  }, [redraw]);
+
+  const endStroke = useCallback(() => {
+    if (!isDrawingRef.current) return;
+    isDrawingRef.current = false;
+    if (currentStrokeRef.current && currentStrokeRef.current.points.length > 1) {
+      strokesRef.current.push({ ...currentStrokeRef.current });
+      setHasStrokes(true);
+    }
+    currentStrokeRef.current = null;
+    redraw();
+  }, [redraw]);
+
+  // Mouse events on window (works on desktop)
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    // ── Mouse ──
-    const onMouseDown = (e: MouseEvent) => {
+    const onDown = (e: MouseEvent) => {
       if (!drawModeRef.current || e.button !== 0) return;
-      e.preventDefault();
-      isDrawing.current = true;
-      const pt = getPoint(e.clientX, e.clientY);
-      currentStrokeRef.current = {
-        points: [pt],
-        color: toolRef.current === "eraser" ? "#000" : colorRef.current,
-        width: toolRef.current === "eraser" ? 24 : 4,
-        isEraser: toolRef.current === "eraser",
-      };
+      startStroke(e.clientX, e.clientY);
     };
-
-    const onMouseMove = (e: MouseEvent) => {
-      if (!isDrawing.current || !currentStrokeRef.current) return;
-      e.preventDefault();
-      const pt = getPoint(e.clientX, e.clientY);
-      currentStrokeRef.current.points.push(pt);
-      redraw();
+    const onMove = (e: MouseEvent) => {
+      if (!isDrawingRef.current) return;
+      continueStroke(e.clientX, e.clientY);
     };
+    const onUp = () => endStroke();
 
-    const onMouseUp = () => {
-      if (!isDrawing.current) return;
-      isDrawing.current = false;
-      if (currentStrokeRef.current && currentStrokeRef.current.points.length > 1) {
-        strokesRef.current.push(currentStrokeRef.current);
-        setHasStrokes(true);
-      }
-      currentStrokeRef.current = null;
-      redraw();
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
     };
+  }, [startStroke, continueStroke, endStroke]);
 
-    // ── Touch ──
-    // We track whether the touch has moved enough to decide: draw or scroll
-    let touchStartX = 0;
-    let touchStartY = 0;
-    let touchDecided = false;   // has user committed to drawing (vs scrolling)?
-    let touchIsDrawing = false;
-
+  // Touch events — attached to document with passive:false so we CAN preventDefault
+  useEffect(() => {
     const onTouchStart = (e: TouchEvent) => {
       if (!drawModeRef.current) return;
       const t = e.touches[0];
-      touchStartX = t.clientX;
-      touchStartY = t.clientY;
-      touchDecided = false;
-      touchIsDrawing = false;
+      startStroke(t.clientX, t.clientY);
+      // don't preventDefault here — let the browser see the touch
     };
 
     const onTouchMove = (e: TouchEvent) => {
-      if (!drawModeRef.current) return;
+      if (!drawModeRef.current || !isDrawingRef.current) return;
+      e.preventDefault(); // block scroll only when actively drawing
       const t = e.touches[0];
-
-      if (!touchDecided) {
-        const dx = Math.abs(t.clientX - touchStartX);
-        const dy = Math.abs(t.clientY - touchStartY);
-        const moved = Math.sqrt(dx * dx + dy * dy);
-        if (moved < 6) return; // wait for a clear gesture
-
-        // If mostly horizontal → scroll; if vertical too → draw
-        // Simple rule: if movement started, treat as draw
-        touchDecided = true;
-        touchIsDrawing = true;
-
-        // Start stroke at original touch position
-        isDrawing.current = true;
-        const startPt = getPoint(touchStartX, touchStartY);
-        currentStrokeRef.current = {
-          points: [startPt],
-          color: toolRef.current === "eraser" ? "#000" : colorRef.current,
-          width: toolRef.current === "eraser" ? 24 : 4,
-          isEraser: toolRef.current === "eraser",
-        };
-      }
-
-      if (!touchIsDrawing || !currentStrokeRef.current) return;
-      e.preventDefault(); // block scroll only while drawing
-      const pt = getPoint(t.clientX, t.clientY);
-      currentStrokeRef.current.points.push(pt);
-      redraw();
+      continueStroke(t.clientX, t.clientY);
     };
 
-    const onTouchEnd = () => {
-      if (!touchIsDrawing) return;
-      touchIsDrawing = false;
-      touchDecided = false;
-      isDrawing.current = false;
-      if (currentStrokeRef.current && currentStrokeRef.current.points.length > 1) {
-        strokesRef.current.push(currentStrokeRef.current);
-        setHasStrokes(true);
-      }
-      currentStrokeRef.current = null;
-      redraw();
-    };
+    const onTouchEnd = () => endStroke();
 
-    canvas.addEventListener("mousedown", onMouseDown, { passive: false });
-    window.addEventListener("mousemove", onMouseMove, { passive: false });
-    window.addEventListener("mouseup", onMouseUp);
-
-    // passive:false required so preventDefault() inside touchmove works
-    canvas.addEventListener("touchstart", onTouchStart, { passive: true });
-    canvas.addEventListener("touchmove", onTouchMove, { passive: false });
-    canvas.addEventListener("touchend", onTouchEnd);
-    canvas.addEventListener("touchcancel", onTouchEnd);
+    document.addEventListener("touchstart", onTouchStart, { passive: true });
+    document.addEventListener("touchmove", onTouchMove, { passive: false });
+    document.addEventListener("touchend", onTouchEnd);
+    document.addEventListener("touchcancel", onTouchEnd);
 
     return () => {
-      canvas.removeEventListener("mousedown", onMouseDown);
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-      canvas.removeEventListener("touchstart", onTouchStart);
-      canvas.removeEventListener("touchmove", onTouchMove);
-      canvas.removeEventListener("touchend", onTouchEnd);
-      canvas.removeEventListener("touchcancel", onTouchEnd);
+      document.removeEventListener("touchstart", onTouchStart);
+      document.removeEventListener("touchmove", onTouchMove);
+      document.removeEventListener("touchend", onTouchEnd);
+      document.removeEventListener("touchcancel", onTouchEnd);
     };
-  }, [redraw]);
+  }, [startStroke, continueStroke, endStroke]);
 
   const clearAll = () => {
     strokesRef.current = [];
@@ -242,83 +188,124 @@ export default function Whiteboard({ drawMode }: WhiteboardProps) {
 
   return (
     <>
+      {/* Canvas — pointer-events:none, purely for rendering */}
       <canvas
         ref={canvasRef}
         width={canvasSize.width}
         height={canvasSize.height}
-        className="fixed top-0 left-0"
         style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
           zIndex: 40,
-          pointerEvents: drawMode ? "all" : "none",
-          // touch-action:none lets touchmove fire reliably;
-          // we manually allow scroll when not drawing
+          pointerEvents: "none",   // never blocks clicks/scroll
           touchAction: "none",
-          cursor: drawMode
-            ? tool === "eraser" ? "cell" : "crosshair"
-            : "default",
+          cursor: "default",
         }}
       />
 
+      {/* Toolbar */}
       {drawMode && (
         <div
-          className="fixed bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-3 rounded-3xl"
           style={{
+            position: "fixed",
+            bottom: 24,
+            left: "50%",
+            transform: "translateX(-50%)",
             zIndex: 50,
-            background: "rgba(255,255,255,0.95)",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "12px 16px",
+            borderRadius: 999,
+            background: "rgba(255,255,255,0.97)",
             boxShadow: "0 8px 32px rgba(249,115,22,0.25), 0 2px 8px rgba(0,0,0,0.08)",
             backdropFilter: "blur(12px)",
             border: "1px solid #fed7aa",
           }}
         >
           <button
+            onMouseDown={(e) => e.stopPropagation()}
             onClick={() => setTool("pen")}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-2xl text-sm font-semibold transition-all ${
-              tool === "pen" ? "bg-orange-500 text-white shadow-md" : "text-orange-600 hover:bg-orange-50"
-            }`}
+            style={{
+              display: "flex", alignItems: "center", gap: 6,
+              padding: "8px 12px", borderRadius: 16,
+              fontWeight: 700, fontSize: 14, cursor: "pointer", border: "none",
+              background: tool === "pen" ? "#f97316" : "transparent",
+              color: tool === "pen" ? "#fff" : "#ea580c",
+              boxShadow: tool === "pen" ? "0 2px 8px rgba(249,115,22,0.4)" : "none",
+            }}
           >
-            <Pencil size={16} />
-            <span>Pen</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+            </svg>
+            Pen
           </button>
 
           <button
+            onMouseDown={(e) => e.stopPropagation()}
             onClick={() => setTool("eraser")}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-2xl text-sm font-semibold transition-all ${
-              tool === "eraser" ? "bg-orange-500 text-white shadow-md" : "text-orange-600 hover:bg-orange-50"
-            }`}
+            style={{
+              display: "flex", alignItems: "center", gap: 6,
+              padding: "8px 12px", borderRadius: 16,
+              fontWeight: 700, fontSize: 14, cursor: "pointer", border: "none",
+              background: tool === "eraser" ? "#f97316" : "transparent",
+              color: tool === "eraser" ? "#fff" : "#ea580c",
+              boxShadow: tool === "eraser" ? "0 2px 8px rgba(249,115,22,0.4)" : "none",
+            }}
           >
-            <Eraser size={16} />
-            <span>Eraser</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 20H7L3 16l11-11 7 7-1 8Z"/><path d="m6.5 17.5-4-4"/>
+            </svg>
+            Eraser
           </button>
 
-          <div className="w-px h-6 bg-orange-200 mx-1" />
+          <div style={{ width: 1, height: 24, background: "#fed7aa", margin: "0 4px" }} />
 
-          <div className="relative">
+          {/* Color picker */}
+          <div style={{ position: "relative" }}>
             <button
+              onMouseDown={(e) => e.stopPropagation()}
               onClick={() => setShowColorPicker((v) => !v)}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-2xl text-sm font-semibold text-orange-600 hover:bg-orange-50 transition-all"
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "8px 12px", borderRadius: 16,
+                fontWeight: 700, fontSize: 14, cursor: "pointer", border: "none",
+                background: "transparent", color: "#ea580c",
+              }}
             >
-              <Palette size={16} />
-              <div className="w-4 h-4 rounded-full border-2 border-white shadow" style={{ background: color }} />
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/>
+                <circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/>
+                <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/>
+              </svg>
+              <div style={{ width: 16, height: 16, borderRadius: "50%", background: color, border: "2px solid white", boxShadow: "0 1px 4px rgba(0,0,0,0.2)" }} />
             </button>
+
             {showColorPicker && (
               <div
-                className="absolute bottom-14 left-0 p-3 rounded-2xl grid gap-2"
                 style={{
-                  background: "rgba(255,255,255,0.98)",
+                  position: "absolute", bottom: 52, left: 0,
+                  padding: 12, borderRadius: 16,
+                  background: "rgba(255,255,255,0.99)",
                   boxShadow: "0 8px 32px rgba(249,115,22,0.2)",
                   border: "1px solid #fed7aa",
+                  display: "grid",
                   gridTemplateColumns: "repeat(4, 1fr)",
+                  gap: 8,
+                  zIndex: 60,
                 }}
               >
                 {COLORS.map((c) => (
                   <button
                     key={c}
+                    onMouseDown={(e) => e.stopPropagation()}
                     onClick={() => { setColor(c); setTool("pen"); setShowColorPicker(false); }}
-                    className="w-8 h-8 rounded-full border-2 transition-transform hover:scale-110"
                     style={{
-                      background: c,
-                      borderColor: c === color ? "#fb923c" : "transparent",
+                      width: 32, height: 32, borderRadius: "50%", cursor: "pointer",
+                      background: c, border: c === color ? "3px solid #fb923c" : "2px solid transparent",
                       boxShadow: c === color ? "0 0 0 2px #fb923c" : "none",
+                      transition: "transform 0.1s",
                     }}
                   />
                 ))}
@@ -326,17 +313,86 @@ export default function Whiteboard({ drawMode }: WhiteboardProps) {
             )}
           </div>
 
-          <div className="w-px h-6 bg-orange-200 mx-1" />
+          <div style={{ width: 1, height: 24, background: "#fed7aa", margin: "0 4px" }} />
 
           <button
+            onMouseDown={(e) => e.stopPropagation()}
             onClick={clearAll}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-2xl text-sm font-semibold text-red-500 hover:bg-red-50 transition-all"
+            style={{
+              display: "flex", alignItems: "center", gap: 6,
+              padding: "8px 12px", borderRadius: 16,
+              fontWeight: 700, fontSize: 14, cursor: "pointer", border: "none",
+              background: "transparent", color: "#ef4444",
+            }}
           >
-            <Trash2 size={16} />
-            <span>Clear</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>
+            </svg>
+            Clear
           </button>
         </div>
       )}
+
+      {/* Cursor dot that follows the finger/mouse — shows where you're drawing */}
+      {drawMode && (
+        <CursorDot tool={tool} color={color} drawModeRef={drawModeRef} isDrawingRef={isDrawingRef} />
+      )}
     </>
+  );
+}
+
+function CursorDot({
+  tool, color, drawModeRef, isDrawingRef,
+}: {
+  tool: "pen" | "eraser";
+  color: string;
+  drawModeRef: React.RefObject<boolean>;
+  isDrawingRef: React.RefObject<boolean>;
+}) {
+  const dotRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const move = (x: number, y: number) => {
+      const dot = dotRef.current;
+      if (!dot) return;
+      dot.style.left = `${x}px`;
+      dot.style.top = `${y}px`;
+      dot.style.opacity = "1";
+    };
+    const hide = () => { if (dotRef.current) dotRef.current.style.opacity = "0"; };
+
+    const onMouse = (e: MouseEvent) => move(e.clientX, e.clientY);
+    const onTouch = (e: TouchEvent) => move(e.touches[0].clientX, e.touches[0].clientY);
+
+    window.addEventListener("mousemove", onMouse);
+    window.addEventListener("touchmove", onTouch, { passive: true });
+    window.addEventListener("mouseleave", hide);
+    return () => {
+      window.removeEventListener("mousemove", onMouse);
+      window.removeEventListener("touchmove", onTouch);
+      window.removeEventListener("mouseleave", hide);
+    };
+  }, []);
+
+  const size = tool === "eraser" ? 28 : 12;
+
+  return (
+    <div
+      ref={dotRef}
+      style={{
+        position: "fixed",
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        background: tool === "eraser" ? "rgba(255,255,255,0.6)" : color,
+        border: tool === "eraser" ? "2px solid #fb923c" : "2px solid white",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.25)",
+        transform: "translate(-50%, -50%)",
+        pointerEvents: "none",
+        zIndex: 55,
+        opacity: 0,
+        transition: "opacity 0.1s",
+      }}
+    />
   );
 }
