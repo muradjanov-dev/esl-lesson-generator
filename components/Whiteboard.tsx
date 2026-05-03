@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, useEffect, useCallback } from "react";
-import { Pencil, Eraser, Trash2, Palette, X } from "lucide-react";
+import { Pencil, Eraser, Trash2, Palette } from "lucide-react";
 
 interface Point {
   x: number;
@@ -16,14 +16,14 @@ interface Stroke {
 }
 
 const COLORS = [
-  "#f97316", // orange
-  "#ef4444", // red
-  "#3b82f6", // blue
-  "#22c55e", // green
-  "#a855f7", // purple
-  "#ec4899", // pink
-  "#eab308", // yellow
-  "#000000", // black
+  "#f97316",
+  "#ef4444",
+  "#3b82f6",
+  "#22c55e",
+  "#a855f7",
+  "#ec4899",
+  "#eab308",
+  "#000000",
 ];
 
 interface WhiteboardProps {
@@ -32,51 +32,52 @@ interface WhiteboardProps {
 
 export default function Whiteboard({ drawMode }: WhiteboardProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [strokes, setStrokes] = useState<Stroke[]>([]);
-  const [currentStroke, setCurrentStroke] = useState<Stroke | null>(null);
+  const strokesRef = useRef<Stroke[]>([]);
+  const currentStrokeRef = useRef<Stroke | null>(null);
+  const isDrawing = useRef(false);
+  const drawModeRef = useRef(drawMode);
+
+  const [, forceRender] = useState(0);
   const [tool, setTool] = useState<"pen" | "eraser">("pen");
   const [color, setColor] = useState("#f97316");
   const [showColorPicker, setShowColorPicker] = useState(false);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
-  const isDrawing = useRef(false);
-  const lastPoint = useRef<Point | null>(null);
+  const [hasStrokes, setHasStrokes] = useState(false);
 
+  const toolRef = useRef(tool);
+  const colorRef = useRef(color);
+
+  useEffect(() => { drawModeRef.current = drawMode; }, [drawMode]);
+  useEffect(() => { toolRef.current = tool; }, [tool]);
+  useEffect(() => { colorRef.current = color; }, [color]);
+
+  // ── Canvas resize ──
   const resizeCanvas = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const docHeight = Math.max(
+    const docH = Math.max(
       document.body.scrollHeight,
       document.documentElement.scrollHeight,
-      document.body.offsetHeight,
       window.innerHeight
     );
-    const newW = window.innerWidth;
-    const newH = docHeight;
-    if (canvas.width !== newW || canvas.height !== newH) {
-      setCanvasSize({ width: newW, height: newH });
-    }
+    setCanvasSize({ width: window.innerWidth, height: docH });
   }, []);
 
   useEffect(() => {
     resizeCanvas();
-    const observer = new ResizeObserver(resizeCanvas);
-    observer.observe(document.body);
+    const ro = new ResizeObserver(resizeCanvas);
+    ro.observe(document.body);
     window.addEventListener("resize", resizeCanvas);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", resizeCanvas);
-    };
+    return () => { ro.disconnect(); window.removeEventListener("resize", resizeCanvas); };
   }, [resizeCanvas]);
 
+  // ── Redraw ──
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    const drawStroke = (stroke: Stroke) => {
+    const paintStroke = (stroke: Stroke) => {
       if (stroke.points.length < 2) return;
       ctx.save();
       ctx.globalCompositeOperation = stroke.isEraser ? "destination-out" : "source-over";
@@ -89,86 +90,96 @@ export default function Whiteboard({ drawMode }: WhiteboardProps) {
       for (let i = 1; i < stroke.points.length; i++) {
         const prev = stroke.points[i - 1];
         const curr = stroke.points[i];
-        const midX = (prev.x + curr.x) / 2;
-        const midY = (prev.y + curr.y) / 2;
-        ctx.quadraticCurveTo(prev.x, prev.y, midX, midY);
+        ctx.quadraticCurveTo(prev.x, prev.y, (prev.x + curr.x) / 2, (prev.y + curr.y) / 2);
       }
       ctx.stroke();
       ctx.restore();
     };
 
-    strokes.forEach(drawStroke);
-    if (currentStroke) drawStroke(currentStroke);
-  }, [strokes, currentStroke]);
+    strokesRef.current.forEach(paintStroke);
+    if (currentStrokeRef.current) paintStroke(currentStrokeRef.current);
+  }, []);
 
-  useEffect(() => {
-    redraw();
-  }, [redraw, canvasSize]);
+  useEffect(() => { redraw(); }, [redraw, canvasSize]);
 
-  const getPoint = (e: React.MouseEvent | React.TouchEvent): Point => {
+  // ── Point helper ──
+  const getPoint = (clientX: number, clientY: number): Point => {
     const canvas = canvasRef.current!;
     const rect = canvas.getBoundingClientRect();
-    const scrollY = window.scrollY;
-    if ("touches" in e) {
-      const touch = e.touches[0];
-      return {
-        x: touch.clientX - rect.left,
-        y: touch.clientY - rect.top + scrollY,
-      };
-    }
     return {
-      x: (e as React.MouseEvent).clientX - rect.left,
-      y: (e as React.MouseEvent).clientY - rect.top + scrollY,
+      x: clientX - rect.left,
+      y: clientY - rect.top + window.scrollY,
     };
   };
 
-  const startDraw = useCallback(
-    (e: React.MouseEvent | React.TouchEvent) => {
-      if (!drawMode) return;
-      e.preventDefault();
+  // ── Native pointer/touch event listeners ──
+  // Key insight: canvas has pointerEvents: none always.
+  // We attach listeners to window, check drawMode, and only
+  // preventDefault (blocking scroll) AFTER the user has started a stroke.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (!drawModeRef.current) return;
+      // Only draw with primary pointer (finger or left mouse)
+      if (e.button !== 0 && e.pointerType === "mouse") return;
       isDrawing.current = true;
-      const point = getPoint(e);
-      lastPoint.current = point;
-      const newStroke: Stroke = {
-        points: [point],
-        color: tool === "eraser" ? "#000000" : color,
-        width: tool === "eraser" ? 24 : 4,
-        isEraser: tool === "eraser",
+      const pt = getPoint(e.clientX, e.clientY);
+      currentStrokeRef.current = {
+        points: [pt],
+        color: toolRef.current === "eraser" ? "#000000" : colorRef.current,
+        width: toolRef.current === "eraser" ? 24 : 4,
+        isEraser: toolRef.current === "eraser",
       };
-      setCurrentStroke(newStroke);
-    },
-    [drawMode, tool, color]
-  );
-
-  const continueDraw = useCallback(
-    (e: React.MouseEvent | React.TouchEvent) => {
-      if (!drawMode || !isDrawing.current || !currentStroke) return;
+      canvas.setPointerCapture(e.pointerId);
       e.preventDefault();
-      const point = getPoint(e);
-      setCurrentStroke((prev) =>
-        prev ? { ...prev, points: [...prev.points, point] } : prev
-      );
-      lastPoint.current = point;
-    },
-    [drawMode, currentStroke]
-  );
+    };
 
-  const endDraw = useCallback(() => {
-    if (!isDrawing.current) return;
-    isDrawing.current = false;
-    if (currentStroke && currentStroke.points.length > 1) {
-      setStrokes((prev) => [...prev, currentStroke]);
-    }
-    setCurrentStroke(null);
-    lastPoint.current = null;
-  }, [currentStroke]);
+    const onPointerMove = (e: PointerEvent) => {
+      if (!drawModeRef.current || !isDrawing.current || !currentStrokeRef.current) return;
+      e.preventDefault();
+      const pt = getPoint(e.clientX, e.clientY);
+      currentStrokeRef.current = {
+        ...currentStrokeRef.current,
+        points: [...currentStrokeRef.current.points, pt],
+      };
+      redraw();
+    };
+
+    const onPointerUp = (e: PointerEvent) => {
+      if (!isDrawing.current) return;
+      isDrawing.current = false;
+      if (currentStrokeRef.current && currentStrokeRef.current.points.length > 1) {
+        strokesRef.current = [...strokesRef.current, currentStrokeRef.current];
+        setHasStrokes(true);
+      }
+      currentStrokeRef.current = null;
+      redraw();
+    };
+
+    // Attach to canvas with { passive: false } so we can preventDefault
+    canvas.addEventListener("pointerdown", onPointerDown, { passive: false });
+    canvas.addEventListener("pointermove", onPointerMove, { passive: false });
+    canvas.addEventListener("pointerup", onPointerUp);
+    canvas.addEventListener("pointercancel", onPointerUp);
+
+    return () => {
+      canvas.removeEventListener("pointerdown", onPointerDown);
+      canvas.removeEventListener("pointermove", onPointerMove);
+      canvas.removeEventListener("pointerup", onPointerUp);
+      canvas.removeEventListener("pointercancel", onPointerUp);
+    };
+  }, [redraw]);
 
   const clearAll = () => {
-    setStrokes([]);
-    setCurrentStroke(null);
+    strokesRef.current = [];
+    currentStrokeRef.current = null;
+    setHasStrokes(false);
+    redraw();
   };
 
-  if (!drawMode && strokes.length === 0) return null;
+  if (!drawMode && !hasStrokes) return null;
 
   return (
     <>
@@ -179,21 +190,14 @@ export default function Whiteboard({ drawMode }: WhiteboardProps) {
         className="fixed top-0 left-0"
         style={{
           zIndex: 40,
+          // Always intercept pointer events so our listeners fire;
+          // but touchAction auto means the browser still scrolls on non-drawing touches
           pointerEvents: drawMode ? "all" : "none",
+          touchAction: "auto",
           cursor: drawMode
-            ? tool === "eraser"
-              ? "cell"
-              : "crosshair"
+            ? tool === "eraser" ? "cell" : "crosshair"
             : "default",
-          touchAction: drawMode ? "none" : "auto",
         }}
-        onMouseDown={startDraw}
-        onMouseMove={continueDraw}
-        onMouseUp={endDraw}
-        onMouseLeave={endDraw}
-        onTouchStart={startDraw}
-        onTouchMove={continueDraw}
-        onTouchEnd={endDraw}
       />
 
       {drawMode && (
@@ -210,11 +214,8 @@ export default function Whiteboard({ drawMode }: WhiteboardProps) {
           <button
             onClick={() => setTool("pen")}
             className={`flex items-center gap-1.5 px-3 py-2 rounded-2xl text-sm font-semibold transition-all ${
-              tool === "pen"
-                ? "bg-orange-500 text-white shadow-md"
-                : "text-orange-600 hover:bg-orange-50"
+              tool === "pen" ? "bg-orange-500 text-white shadow-md" : "text-orange-600 hover:bg-orange-50"
             }`}
-            title="Pen"
           >
             <Pencil size={16} />
             <span>Pen</span>
@@ -223,11 +224,8 @@ export default function Whiteboard({ drawMode }: WhiteboardProps) {
           <button
             onClick={() => setTool("eraser")}
             className={`flex items-center gap-1.5 px-3 py-2 rounded-2xl text-sm font-semibold transition-all ${
-              tool === "eraser"
-                ? "bg-orange-500 text-white shadow-md"
-                : "text-orange-600 hover:bg-orange-50"
+              tool === "eraser" ? "bg-orange-500 text-white shadow-md" : "text-orange-600 hover:bg-orange-50"
             }`}
-            title="Eraser"
           >
             <Eraser size={16} />
             <span>Eraser</span>
@@ -239,7 +237,6 @@ export default function Whiteboard({ drawMode }: WhiteboardProps) {
             <button
               onClick={() => setShowColorPicker((v) => !v)}
               className="flex items-center gap-1.5 px-3 py-2 rounded-2xl text-sm font-semibold text-orange-600 hover:bg-orange-50 transition-all"
-              title="Pick color"
             >
               <Palette size={16} />
               <div
@@ -260,11 +257,7 @@ export default function Whiteboard({ drawMode }: WhiteboardProps) {
                 {COLORS.map((c) => (
                   <button
                     key={c}
-                    onClick={() => {
-                      setColor(c);
-                      setTool("pen");
-                      setShowColorPicker(false);
-                    }}
+                    onClick={() => { setColor(c); setTool("pen"); setShowColorPicker(false); }}
                     className="w-8 h-8 rounded-full border-2 transition-transform hover:scale-110"
                     style={{
                       background: c,
@@ -282,7 +275,6 @@ export default function Whiteboard({ drawMode }: WhiteboardProps) {
           <button
             onClick={clearAll}
             className="flex items-center gap-1.5 px-3 py-2 rounded-2xl text-sm font-semibold text-red-500 hover:bg-red-50 transition-all"
-            title="Clear all drawings"
           >
             <Trash2 size={16} />
             <span>Clear</span>
