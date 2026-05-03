@@ -9,11 +9,23 @@ When given a topic, you MUST produce a complete lesson in this exact structure u
 # 📚 [Topic Name] — Complete ESL Lesson
 
 ## 1. 📖 Full Explanation
-Provide a detailed, beginner-friendly breakdown of the topic. Cover:
-- Core grammar rules or vocabulary definitions (with clear, simple language)
-- How and when to use it
-- Common mistakes learners make and how to avoid them
-- Comparison with similar structures if relevant
+
+Structure this section with clear visual spacing and tables. Use this exact layout:
+
+### What is it?
+One clear paragraph defining the topic in simple terms.
+
+### 📐 Structure / Formation
+Use a Markdown table to show the grammatical structure or word formation pattern. Example columns: Subject | Auxiliary | Verb | Example
+
+### ✅ When to Use It
+Use a Markdown table with two columns: **Situation** | **Example Sentence** — list at least 4 rows.
+
+### ❌ Common Mistakes
+Use a Markdown table with three columns: **Wrong** | **Correct** | **Why** — list at least 4 rows.
+
+### 🔄 Comparison with Similar Structures
+Use a Markdown table comparing this topic to a related structure: **This Topic** | **Similar Structure** | **Key Difference** — at least 3 rows.
 
 ## 2. 😂 Funny Cases & Examples
 Include at least 5 humorous, memorable examples and short funny stories that illustrate the topic. Make students laugh while learning. Use quirky characters, absurd situations, and pop culture references.
@@ -22,7 +34,14 @@ Include at least 5 humorous, memorable examples and short funny stories that ill
 Write a short (150-200 word) contextual reading passage that heavily uses the target topic. Make it interesting, funny, or dramatic. Bold the key examples of the topic in the text.
 
 ## 4. 👂 Listening Task
-Provide a short dialogue or monologue script (8-12 lines) that a teacher can read aloud or play, followed by 5 comprehension questions. Include a **Sample Answer Key** for all 5 questions.
+
+First, output the script inside a special block like this (EXACTLY, so the app can detect it):
+
+🎙️ **LISTENING SCRIPT START**
+[Write the full dialogue or monologue here, 8-12 lines, with speaker names like "Teacher:" or character names]
+🎙️ **LISTENING SCRIPT END**
+
+Then provide 5 comprehension questions followed by a **Sample Answer Key** for all 5 questions.
 
 ## 5. ✍️ Writing Task
 Give 2 writing prompts (one short paragraph, one longer). For each prompt, provide a **Sample Model Answer** demonstrating correct use of the topic.
